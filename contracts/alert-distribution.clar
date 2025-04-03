@@ -1,15 +1,26 @@
-;; Patient Tracking Contract
-;; Securely links devices to recipient patients
+;; Alert Distribution Contract
+;; Manages notification of affected individuals
+
+;; Define data variables
+(define-data-var last-alert-id uint u0)
 
 ;; Define data maps
-(define-map patient-devices
-  { patient-id: principal }
-  { device-ids: (list 20 uint) }
+(define-map alerts
+  { alert-id: uint }
+  {
+    title: (string-utf8 100),
+    description: (string-utf8 500),
+    severity: (string-utf8 20),
+    affected-batches: (list 10 (string-utf8 50)),
+    affected-types: (list 10 (string-utf8 100)),
+    created-at: uint,
+    created-by: principal
+  }
 )
 
-(define-map device-patients
+(define-map device-alerts
   { device-id: uint }
-  { patient-id: principal }
+  { alert-ids: (list 20 uint) }
 )
 
 ;; Define data map for devices (simplified version of device-registration)
@@ -28,77 +39,73 @@
   )
 )
 
-;; Associate a device with a patient
-(define-public (associate-device (device-id uint) (patient-id principal))
+;; Create a new alert
+(define-public (create-alert
+                (title (string-utf8 100))
+                (description (string-utf8 500))
+                (severity (string-utf8 20))
+                (affected-batches (list 10 (string-utf8 50)))
+                (affected-types (list 10 (string-utf8 100))))
   (let
     (
-      (current-devices (default-to { device-ids: (list) } (map-get? patient-devices { patient-id: patient-id })))
-      (device-exists (default-to { exists: false } (map-get? devices { device-id: device-id })))
+      (new-id (+ (var-get last-alert-id) u1))
+      (tx-sender tx-sender)
     )
-    ;; Check if device exists
-    (if (get exists device-exists)
-      ;; Check if device is already associated with a patient
-      (if (is-none (map-get? device-patients { device-id: device-id }))
-        (begin
-          ;; Associate device with patient
-          (map-set device-patients
-            { device-id: device-id }
-            { patient-id: patient-id }
-          )
-
-          ;; Add device to patient's list
-          (map-set patient-devices
-            { patient-id: patient-id }
-            { device-ids: (unwrap-panic (as-max-len? (append (get device-ids current-devices) device-id) u20)) }
-          )
-
-          (ok true)
-        )
-        (err u403) ;; Device already associated
-      )
-      (err u404) ;; Device not found
+    (var-set last-alert-id new-id)
+    (map-set alerts
+      { alert-id: new-id }
+      {
+        title: title,
+        description: description,
+        severity: severity,
+        affected-batches: affected-batches,
+        affected-types: affected-types,
+        created-at: block-height,
+        created-by: tx-sender
+      }
     )
+    (ok new-id)
   )
 )
 
-;; Disassociate a device from a patient
-(define-public (disassociate-device (device-id uint))
+;; Associate an alert with a device
+(define-public (associate-alert-with-device (alert-id uint) (device-id uint))
   (let
     (
-      (device-patient (map-get? device-patients { device-id: device-id }))
+      (current-alerts (default-to { alert-ids: (list) } (map-get? device-alerts { device-id: device-id })))
+      (alert-exists (is-some (map-get? alerts { alert-id: alert-id })))
+      (device-exists (default-to { exists: false } (map-get? devices { device-id: device-id })))
     )
-    (if (is-some device-patient)
-      (let
-        (
-          (patient-id (get patient-id (unwrap-panic device-patient)))
-          (current-devices (default-to { device-ids: (list) } (map-get? patient-devices { patient-id: patient-id })))
-          (updated-devices (filter (lambda (id) (not (is-eq id device-id))) (get device-ids current-devices)))
+    ;; Check if alert and device exist
+    (if (and alert-exists (get exists device-exists))
+      (begin
+        ;; Add alert to device's list
+        (map-set device-alerts
+          { device-id: device-id }
+          { alert-ids: (unwrap-panic (as-max-len? (append (get alert-ids current-alerts) alert-id) u20)) }
         )
-        ;; Remove device from patient's list
-        (map-set patient-devices
-          { patient-id: patient-id }
-          { device-ids: updated-devices }
-        )
-
-        ;; Remove device-patient association
-        (map-delete device-patients { device-id: device-id })
 
         (ok true)
       )
-      (err u404) ;; Device not associated
+      (err u404) ;; Alert or device not found
     )
   )
 )
 
 ;; Read-only functions
 
-;; Get all devices for a patient
-(define-read-only (get-patient-devices (patient-id principal))
-  (default-to { device-ids: (list) } (map-get? patient-devices { patient-id: patient-id }))
+;; Get alert details
+(define-read-only (get-alert (alert-id uint))
+  (map-get? alerts { alert-id: alert-id })
 )
 
-;; Get patient for a device
-(define-read-only (get-device-patient (device-id uint))
-  (map-get? device-patients { device-id: device-id })
+;; Get all alerts for a device
+(define-read-only (get-device-alerts (device-id uint))
+  (default-to { alert-ids: (list) } (map-get? device-alerts { device-id: device-id }))
+)
+
+;; Get total number of alerts
+(define-read-only (get-alert-count)
+  (var-get last-alert-id)
 )
 
